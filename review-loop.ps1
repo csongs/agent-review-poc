@@ -164,6 +164,7 @@ if (Test-Path "REVIEW.md") {
 }
 
 codex exec `
+    --skip-git-repo-check `
     --model $CodexModel `
     --sandbox workspace-write `
     @"
@@ -335,6 +336,7 @@ $(Get-Content "RESPONSE.md" -Raw -Encoding UTF8)
     }
 
     codex exec `
+        --skip-git-repo-check `
         --sandbox workspace-write `
         resume `
         --last `

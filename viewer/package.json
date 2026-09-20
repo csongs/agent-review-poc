@@ -1,0 +1,9 @@
+{
+  "name": "review-run-viewer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Read-only viewer for Claude x Codex review-loop history",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

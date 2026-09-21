@@ -13,9 +13,10 @@ function arg(name, fallback) {
 
 const ROOT = path.resolve(arg("root", process.env.REVIEW_ROOT || path.join(__dirname, "..")));
 const PORT = Number(arg("port", process.env.PORT || 4173));
-const HISTORY = path.join(ROOT, "history");
+const WORK_ITEMS = path.join(ROOT, "work-items");
 const PUBLIC = path.join(__dirname, "public");
 
+const WORK_ITEM_ID = /^[a-z0-9][a-z0-9-]*$/;
 const RUN_ID = /^\d{8}-\d{6}$/;
 const RAW_PATH = /^((requirement|00-plan-initial|final-plan|conversation)|round-\d{2}\/(review|response|plan))\.md$/;
 
@@ -112,8 +113,8 @@ function parseResponses(md) {
 
 // ---------- run model ----------
 
-function parseRun(runId) {
-  const dir = path.join(HISTORY, runId);
+function parseRun(workItemId, runId) {
+  const dir = path.join(WORK_ITEMS, workItemId, "history", runId);
   const conv = readText(path.join(dir, "conversation.md")) || "";
 
   const header = parseKeyValues(conv.split(/^---\s*$/m)[0]);
@@ -149,6 +150,7 @@ function parseRun(runId) {
   else if (failed) status = "FAILED";
 
   return {
+    workItemId,
     runId,
     status,
     startedAt: header["Started At"] || null,
@@ -164,41 +166,80 @@ function parseRun(runId) {
   };
 }
 
-function listRuns() {
-  return listDirs(HISTORY)
+function listWorkItems() {
+  return listDirs(WORK_ITEMS)
+    .filter((id) => WORK_ITEM_ID.test(id))
+    .sort()
+    .map((id) => {
+      let metadata = {};
+      const raw = readText(path.join(WORK_ITEMS, id, "work-item.json"));
+      try { metadata = raw ? JSON.parse(raw) : {}; } catch {}
+      return {
+        id,
+        title: metadata.title || id,
+        status: metadata.status || "UNKNOWN",
+        latestRunId: metadata.latestRunId || null,
+      };
+    });
+}
+
+function listRuns(workItemId) {
+  const history = path.join(WORK_ITEMS, workItemId, "history");
+  return listDirs(history)
     .filter((n) => RUN_ID.test(n))
     .sort()
     .reverse()
     .map((id) => {
-      const { runId, status, startedAt, claudeModel, codexModel, reviewRounds, failure } = parseRun(id);
-      return { runId, status, startedAt, claudeModel, codexModel, reviewRounds, failure };
+      const { runId, status, startedAt, claudeModel, codexModel, reviewRounds, failure } = parseRun(workItemId, id);
+      return { workItemId, runId, status, startedAt, claudeModel, codexModel, reviewRounds, failure };
     });
 }
 
-// ---------- HTTP ----------
-
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
+const MIME = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".svg": "image/svg+xml",
+};
 
 function sendJson(res, code, obj) {
-  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  res.writeHead(code, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
   res.end(JSON.stringify(obj));
 }
 
 function handleApi(url, res) {
   const parts = url.pathname.split("/").filter(Boolean).slice(1); // drop "api"
 
-  if (parts[0] === "runs" && parts.length === 1) return sendJson(res, 200, listRuns());
+  if (parts[0] === "work-items" && parts.length === 1) {
+    return sendJson(res, 200, listWorkItems());
+  }
 
-  if (parts[0] === "runs" && parts[1] && RUN_ID.test(parts[1])) {
-    const runId = parts[1];
-    if (!fs.existsSync(path.join(HISTORY, runId))) return sendJson(res, 404, { error: "run not found" });
+  const workItemId = parts[1];
+  if (parts[0] !== "work-items" || !workItemId || !WORK_ITEM_ID.test(workItemId)) {
+    return sendJson(res, 404, { error: "not found" });
+  }
 
-    if (parts.length === 2) return sendJson(res, 200, parseRun(runId));
+  const workItemDir = path.join(WORK_ITEMS, workItemId);
+  if (!fs.existsSync(workItemDir)) return sendJson(res, 404, { error: "work item not found" });
 
-    if (parts[2] === "raw") {
+  if (parts[2] === "runs" && parts.length === 3) {
+    return sendJson(res, 200, listRuns(workItemId));
+  }
+
+  const runId = parts[3];
+  if (parts[2] === "runs" && runId && RUN_ID.test(runId)) {
+    const runDir = path.join(workItemDir, "history", runId);
+    if (!fs.existsSync(runDir)) return sendJson(res, 404, { error: "run not found" });
+
+    if (parts.length === 4) return sendJson(res, 200, parseRun(workItemId, runId));
+
+    if (parts[4] === "raw") {
       const rel = url.searchParams.get("path") || "";
       if (!RAW_PATH.test(rel)) return sendJson(res, 400, { error: "invalid path" });
-      const text = readText(path.join(HISTORY, runId, rel));
+      const text = readText(path.join(runDir, rel));
       if (text === null) return sendJson(res, 404, { error: "file not found" });
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(text);
@@ -214,7 +255,9 @@ function handleStatic(url, res) {
     res.writeHead(404);
     return res.end("Not found");
   }
-  res.writeHead(200, { "Content-Type": (MIME[path.extname(file)] || "application/octet-stream") + "; charset=utf-8" });
+  res.writeHead(200, {
+    "Content-Type": (MIME[path.extname(file)] || "application/octet-stream") + "; charset=utf-8",
+  });
   fs.createReadStream(file).pipe(res);
 }
 
@@ -227,12 +270,12 @@ http
     const url = new URL(req.url, "http://localhost");
     try {
       if (url.pathname.startsWith("/api/")) return handleApi(url, res);
-      handleStatic(url, res);
+      return handleStatic(url, res);
     } catch (e) {
-      sendJson(res, 500, { error: String(e.message || e) });
+      return sendJson(res, 500, { error: String(e.message || e) });
     }
   })
   .listen(PORT, "127.0.0.1", () => {
     console.log(`Review Run Viewer  http://127.0.0.1:${PORT}`);
-    console.log(`Reading            ${HISTORY}`);
+    console.log(`Reading            ${WORK_ITEMS}`);
   });

@@ -194,6 +194,22 @@ function listRuns(workItemId) {
       return { workItemId, runId, status, startedAt, claudeModel, codexModel, reviewRounds, failure };
     });
 }
+
+const MIME = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".svg": "image/svg+xml",
+};
+
+function sendJson(res, code, obj) {
+  res.writeHead(code, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(JSON.stringify(obj));
+}
+
 function handleApi(url, res) {
   const parts = url.pathname.split("/").filter(Boolean).slice(1); // drop "api"
 

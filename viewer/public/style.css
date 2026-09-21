@@ -84,3 +84,7 @@ details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .btn { border: 1px solid var(--line); background: var(--panel); color: inherit; border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit; }
 .btn.on { border-color: var(--accent); color: var(--accent); }
+
+.work-item-picker { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.work-item-picker select { max-width: 320px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); padding: 4px 8px; }
+

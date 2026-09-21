@@ -1,7 +1,7 @@
 // Review Run Viewer - read-only UI. All parsing happens in server.js;
 // this file only renders the normalized JSON and raw markdown.
 
-const state = { runs: [], run: null, tab: "timeline", sel: null, planView: "diff" };
+const state = { workItems: [], workItem: null, runs: [], run: null, tab: "timeline", sel: null, planView: "diff" };
 let renderToken = 0;
 
 const $ = (s) => document.querySelector(s);
@@ -15,7 +15,7 @@ async function api(path) {
 }
 
 async function raw(runId, path) {
-  const r = await fetch(`/api/runs/${runId}/raw?path=${encodeURIComponent(path)}`);
+  const r = await fetch(`/api/work-items/${state.workItem.id}/runs/${runId}/raw?path=${encodeURIComponent(path)}`);
   return r.ok ? r.text() : null;
 }
 
@@ -91,7 +91,7 @@ function fmtTime(s) { return s ? s.replace("T", " ") : ""; }
 function renderRuns() {
   const el = $("#runs");
   if (!state.runs.length) {
-    el.innerHTML = '<p class="muted pad">No runs in history/.<br>Run review-loop.ps1 first.</p>';
+    el.innerHTML = '<p class="muted pad">No runs for this work item.<br>Run review-loop.ps1 first.</p>';
     return;
   }
   el.innerHTML = state.runs.map((r) => `
@@ -100,7 +100,7 @@ function renderRuns() {
       <small>${esc(r.claudeModel || "?")} × ${esc(r.codexModel || "?")} · ${r.reviewRounds} review${r.reviewRounds === 1 ? "" : "s"}</small>
       ${r.failure ? `<br><small style="color:var(--bad)">${esc(r.failure.stage)}</small>` : ""}
     </button>`).join("");
-  el.querySelectorAll(".run-item").forEach((b) => b.addEventListener("click", () => { location.hash = "#/" + b.dataset.id; }));
+  el.querySelectorAll(".run-item").forEach((b) => b.addEventListener("click", () => { location.hash = `#/${state.workItem.id}/${b.dataset.id}`; }));
 }
 
 // ---------- run view ----------
@@ -135,7 +135,7 @@ function renderRun() {
 
   main.innerHTML = `
     <div class="head">
-      <h1>${badge(run.status)} <span>Run ${esc(run.runId)}</span></h1>
+      <h1>${badge(run.status)} <span>${esc(state.workItem.title)} · Run ${esc(run.runId)}</span></h1>
       <div class="meta">
         <span>Claude <b>${esc(run.claudeModel || "?")}</b></span>
         <span>Codex <b>${esc(run.codexModel || "?")}</b></span>
@@ -232,7 +232,7 @@ async function renderBody() {
 
 async function openRun(id) {
   try {
-    state.run = await api(`/api/runs/${id}`);
+    state.run = await api(`/api/work-items/${state.workItem.id}/runs/${id}`);
     state.sel = null;
     state.tab = "timeline";
   } catch (e) {
@@ -244,18 +244,55 @@ async function openRun(id) {
   renderRun();
 }
 
-async function boot() {
-  try {
-    state.runs = await api("/api/runs");
-  } catch (e) {
-    $("#main").innerHTML = `<p class="pad" style="color:var(--bad)">${esc(e.message)}</p>`;
+async function selectWorkItem(id, preferredRun) {
+  state.workItem = state.workItems.find((x) => x.id === id) || state.workItems[0] || null;
+  state.run = null;
+  const select = $("#work-item");
+  if (select && state.workItem) select.value = state.workItem.id;
+  if (!state.workItem) {
+    state.runs = [];
+    renderRuns();
+    renderRun();
     return;
   }
+  state.runs = await api(`/api/work-items/${state.workItem.id}/runs`);
   renderRuns();
-  const fromHash = () => (location.hash.match(/^#\/(\d{8}-\d{6})$/) || [])[1];
-  window.addEventListener("hashchange", () => { const id = fromHash(); if (id) openRun(id); });
-  const first = fromHash() || (state.runs[0] && state.runs[0].runId);
-  if (first) openRun(first); else renderRun();
+  const runId = preferredRun || state.workItem.latestRunId || (state.runs[0] && state.runs[0].runId);
+  if (runId && state.runs.some((r) => r.runId === runId)) await openRun(runId);
+  else renderRun();
+}
+
+function route() {
+  const match = location.hash.match(/^#\/([a-z0-9][a-z0-9-]*)(?:\/(\d{8}-\d{6}))?$/);
+  return match ? { workItemId: match[1], runId: match[2] || null } : null;
+}
+
+async function boot() {
+  try {
+    state.workItems = await api("/api/work-items");
+    const select = $("#work-item");
+    select.innerHTML = state.workItems.map((x) =>
+      `<option value="${esc(x.id)}">${esc(x.title)} · ${esc(x.status)}</option>`
+    ).join("");
+    select.addEventListener("change", () => {
+      location.hash = "#/" + select.value;
+    });
+
+    const initial = route();
+    await selectWorkItem(initial && initial.workItemId, initial && initial.runId);
+
+    window.addEventListener("hashchange", async () => {
+      const next = route();
+      if (!next) return;
+      if (!state.workItem || next.workItemId !== state.workItem.id) {
+        await selectWorkItem(next.workItemId, next.runId);
+      } else if (next.runId) {
+        await openRun(next.runId);
+      }
+    });
+  } catch (e) {
+    $("#main").innerHTML = `<p class="pad" style="color:var(--bad)">${esc(e.message)}</p>`;
+  }
 }
 
 boot();
